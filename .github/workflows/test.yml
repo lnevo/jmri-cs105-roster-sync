@@ -1,0 +1,33 @@
+name: test
+on:
+  push:
+    branches: [main]
+  pull_request:
+jobs:
+  python3:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m unittest discover -s tests -v
+  jython:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - name: Plan the sample roster under Jython 2.7 (JMRI's interpreter)
+        run: |
+          curl -sSLo jython.jar https://repo1.maven.org/maven2/org/python/jython-standalone/2.7.4/jython-standalone-2.7.4.jar
+          java -jar jython.jar -c "
+          import sys; sys.path.insert(0, '.')
+          import cs105_roster_sync as s
+          e = s.load_roster('tests/sample_roster/roster.xml', 'tests/sample_roster/roster')
+          a = s.plan(e, ['06.01.00.00.C0.65'], names='road')
+          assert [x['action'] for x in a] == ['update', 'create', 'skip'], a
+          print('\n'.join(s.describe(x) for x in a))
+          "

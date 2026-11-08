@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<roster-config>
+  <roster>
+    <locomotive id="Demo 101" fileName="Demo_101.xml" roadNumber="101" roadName="JF&amp;N" dccAddress="101" />
+    <locomotive id="Demo 7" fileName="Demo_7.xml" roadNumber="7" roadName="JF&amp;N" dccAddress="7" />
+    <locomotive id="No Address" fileName="No_Address.xml" dccAddress="" />
+  </roster>
+</roster-config>

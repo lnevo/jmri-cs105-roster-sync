@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<locomotive-config>
+  <locomotive id="No Address" fileName="No_Address.xml" dccAddress="" comment="unprogrammed shell" />
+</locomotive-config>

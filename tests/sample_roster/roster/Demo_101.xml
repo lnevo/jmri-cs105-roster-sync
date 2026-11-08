@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<locomotive-config>
+  <locomotive id="Demo 101" fileName="Demo_101.xml" roadNumber="101" roadName="JF&amp;N" dccAddress="101" comment="GP9, sound">
+    <locoaddress>
+      <dcclocoaddress number="101" longaddress="yes" />
+    </locoaddress>
+    <functionlabels>
+      <functionlabel num="0" lockable="true" visible="true">Headlight</functionlabel>
+      <functionlabel num="1" lockable="true" visible="true">Bell</functionlabel>
+      <functionlabel num="2" lockable="false" visible="true">Horn</functionlabel>
+      <functionlabel num="8" lockable="true" visible="true">Mute</functionlabel>
+    </functionlabels>
+  </locomotive>
+</locomotive-config>
