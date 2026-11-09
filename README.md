@@ -19,6 +19,10 @@ This script does the whole roster at once. It asks the CS-105 to create each mis
 
 Tested with JMRI 5.16 and one CS-105. If you try it with another firmware, an issue saying whether it worked is welcome.
 
+### Other LCC command stations
+
+Nothing in the train side is TCS-only: train node IDs, the Train Search that creates a train, and the settings keys come from OpenLCB and OpenMRN. The script finds the command station by asking who produces event `09.00.99.FE.FF.FF.00.01`, so a command station from another maker that produces it, with the same train settings, should work too. Try **Show plan** first. It writes nothing, and the log names the command station it found and how. Settings the command station does not have are listed as "settings not found" rather than written. Please open an issue saying whether it worked.
+
 ## Use it
 
 1. Download [`cs105_roster_sync.py`](cs105_roster_sync.py) and keep it somewhere handy, for example in your JMRI user files folder.
@@ -51,7 +55,8 @@ It does not move trains, change track power, touch turnouts or read or write dec
 
 ### Safety checks
 
-- **No CS-105, no writing.** Before planning, the script asks every node on the LCC bus to announce itself and looks for the CS-105 by its model name. If it does not answer, Apply stays off. A powered-down CS-105 otherwise looks like an empty one, and the plan would offer to create every locomotive.
+- **No command station, no writing.** Before planning, the script asks every node on the LCC bus to announce itself and asks who produces the command-station event `09.00.99.FE.FF.FF.00.01`. If nothing answers, it looks for a node whose model name contains CS-105, for firmware that does not produce the event. If neither finds one, Apply stays off. A powered-down command station otherwise looks like an empty one, and the plan would offer to create every locomotive.
+- **Exactly one command station.** A new train is created by a request the whole bus hears, so with two command stations on one connection both could create it. The script lists them and keeps Apply off.
 - **One run at a time.** A second Apply while one is still running is refused.
 - **More than one LCC connection:** you choose which one. The script does not guess.
 
@@ -81,10 +86,11 @@ python3 cs105_roster_sync.py path/to/folder-with-roster.xml --values
 
 ## How it works
 
-- Each DCC address maps to a CS-105 train node: short address *n* is `06.01.00.00.00.nn`, and long address *n* is `06.01.00.00.(C0+high).low`. JMRI's LCC throttle uses the same mapping.
+- The command station is the node that answers Identify Producer for `09.00.99.FE.FF.FF.00.01`. TCS defined this event; JMRI already uses the matching `…00.02` to find a programming track. Boosters produce `…00.03`.
+- Each DCC address maps to a train node: short address *n* is `06.01.00.00.00.nn`, and long address *n* is `06.01.00.00.(C0+high).low`. JMRI's LCC throttle uses the same mapping.
 - A missing train is created with the OpenLCB Train Search Protocol: an Identify Producer for event `09.00.99.FF`, followed by the address digits and the flags Allocate, Exact, Address-only, DCC and, for long addresses, Force-long. The CS-105 answers by creating the train.
 - Settings are written through the train's configuration memory, using the keys DecoderPro's export uses (`Train.Name`, `Train.User Description`, `Train.Functions(n).Display`, `.Momentary`, `.Description`). `Functions(n)` is F(n+1), and F0 is the headlight.
-- The label-to-icon table is copied from JMRI 5.16 `TcsExportAction`, so both tools agree.
+- The label-to-icon table is copied from JMRI 5.16 `TcsExportAction`, so both tools agree. It also accepts "Shunt" and "Blowdown", the spellings the command station firmware's own table uses for the same codes.
 
 Sources: the OpenLCB Train Search Protocol Standard (2024-07-22); JMRI 5.16 `jmri.jmrit.symbolicprog.TcsUploadAction` and `TcsExportAction`; the JMRI help page "OpenLCB on TCS Hardware".
 

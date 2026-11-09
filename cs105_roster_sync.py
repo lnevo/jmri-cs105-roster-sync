@@ -1,4 +1,5 @@
-# cs105_roster_sync.py - copy the JMRI roster into a TCS CS-105 command station.
+# cs105_roster_sync.py - copy the JMRI roster into a TCS CS-105 command station,
+# or another LCC command station that produces the command-station event.
 #
 # https://github.com/lnevo/jmri-cs105-roster-sync   (GPL-2.0, like JMRI)
 #
@@ -39,7 +40,7 @@ import sys
 import time
 import xml.etree.ElementTree as ET
 
-VERSION = "1.0.0"
+VERSION = "1.1.0"
 
 SEARCH_PREFIX = (0x09, 0x00, 0x99, 0xFF)
 FLAG_ALLOCATE = 0x80
@@ -49,7 +50,12 @@ PROTO_DCC = 0x08
 DCC_LONG = 0x04
 TRAIN_NODE_PREFIX = "06.01.00.00"
 N_FUNCTIONS = 28  # Train.Functions(0..27) = F1..F28, as in the CS-105 CDI
-CS105_MODEL = "CS-105"
+# A command station produces this well-known event, so an Identify Producer for
+# it finds one whatever its make. TCS defined it (OpenMRN-based firmware, same
+# family as JMRI's programming-track event 09.00.99.FE.FF.FF.00.02); it is not
+# yet in a published OpenLCB standard. Boosters use ...00.03.
+COMMAND_STATION_EVENT = "09.00.99.FE.FF.FF.00.01"
+CS105_MODEL = "CS-105"  # fallback for a CS-105 that does not answer the event
 LOCK_PROPERTY = "cs105.roster.sync.running"
 OPTION_NAMES = ("CS105_APPLY", "CS105_ONLY", "CS105_RENAME", "CS105_NAMES", "CS105_CONNECTION")
 
@@ -71,7 +77,13 @@ DISPLAY_CODES = {
     "safety": 38, "sanding": 55, "ash dump": 88, "shoveling": 18, "water fill": 35,
     "long whistle": 103, "short whistle": 64, "doppler horn": 63,
     "curve squeal": 36, "brake squeal": 21, "announce": 6, "cab chatter": 27,
+    # Same codes, spelled as the command station firmware's own function table
+    # (OpenMRN locodb Defs.hxx) spells them.
+    "shunt": 7, "blowdown": 56,
 }
+# Not added yet: codes in the firmware table that JMRI 5.16's export does not
+# use (5, 16, 26, 32, 43, 44, 46, 49, 50, 52, 65, 96, 112, 203, 204). They wait
+# for a check that an older CS-105 shows them, not a blank button.
 
 NAME_SCHEMES = ("id", "road")
 
@@ -126,6 +138,40 @@ def is_train_node(node_id):
 
 def is_cs105_model(model_name):
     return CS105_MODEL in (model_name or "")
+
+
+def choose_command_station(producers, models):
+    """Pick the one command station this run may write through.
+
+    producers: node IDs that answered Producer Identified for
+    COMMAND_STATION_EVENT. models: {node ID: SNIP model name} of the other
+    nodes, used only when no node answered the event (a CS-105 whose firmware
+    does not produce it).
+
+    Returns {"node": ID or None, "by": "event" | "model" | None, "all": [IDs]}.
+    "node" is None when none was found or when more than one was: a new train
+    is created by a Train Search the whole bus hears, so with two command
+    stations both could allocate it.
+    """
+    found = sorted(set(str(n).upper() for n in producers if not is_train_node(n)))
+    by = "event" if found else None
+    if not found:
+        found = sorted(str(n).upper() for n, m in models.items()
+                       if not is_train_node(n) and is_cs105_model(m))
+        by = "model" if found else None
+    return {"node": found[0] if len(found) == 1 else None, "by": by, "all": found}
+
+
+def station_status(station):
+    """One log line saying which command station was found, and how."""
+    if not station["all"]:
+        return "command station NOT FOUND"
+    if station["node"] is None:
+        return "%d command stations answered (%s); writing needs exactly one" % (
+            len(station["all"]), ", ".join(station["all"]))
+    how = ("it produces the command-station event" if station["by"] == "event"
+           else "model name CS-105; it did not answer the command-station event")
+    return "command station %s (%s)" % (station["node"], how)
 
 
 def load_entry(path, index_attrs=None):
@@ -361,35 +407,60 @@ class BusState(object):
         self.iface = iface
         self.store = iface.getNodeStore()
         self.nodes = []
-        self.cs105 = None
+        self.station = choose_command_station([], {})
+
+    @property
+    def cs105(self):
+        """The command station to write through, or None (kept for old callers)."""
+        return self.station["node"]
 
     def refresh(self, log, wait=4.0):
-        """Ask every node to announce itself, then look for the CS-105 by its SNIP model."""
-        from org.openlcb import NodeID
-        self.store.refresh()
-        time.sleep(wait)
+        """Ask every node to announce itself, then find the command station.
+
+        First by who produces COMMAND_STATION_EVENT; failing that, by a SNIP
+        model name containing CS-105.
+        """
+        from org.openlcb import (EventID, IdentifyProducersMessage, MessageDecoder, NodeID)
+        wanted = EventID(COMMAND_STATION_EVENT)
+        producers = set()
+
+        class _Producers(MessageDecoder):
+            def handleProducerIdentified(self, msg, sender):
+                if msg.getEventID().equals(wanted) and msg.getSourceNodeID() is not None:
+                    producers.add(str(msg.getSourceNodeID()))
+
+        listener = _Producers()
+        self.iface.registerMessageListener(listener)
+        try:
+            self.store.refresh()
+            self.iface.getOutputConnection().put(
+                IdentifyProducersMessage(self.iface.getNodeId(), wanted), None)
+            time.sleep(wait)
+        finally:
+            self.iface.unRegisterMessageListener(listener)
         self.nodes = [str(nm.getNodeID()) for nm in self.store.getNodeMemos()]
-        others = [n for n in self.nodes if not is_train_node(n)]
-        for n in others:
-            self.store.getSimpleNodeIdent(NodeID(n))  # asks for SNIP
 
-        def model(n):
-            ident = self.store.getSimpleNodeIdent(NodeID(n))
-            return ident.getModelName() if ident is not None else ""
-
-        def found():
+        models = {}
+        if not producers:
+            others = [n for n in self.nodes if not is_train_node(n)]
             for n in others:
-                if is_cs105_model(model(n)):
-                    self.cs105 = n
-                    return True
-            return False
+                self.store.getSimpleNodeIdent(NodeID(n))  # asks for SNIP
 
-        self.cs105 = None
-        _wait_until(found, 6.0)
-        log("LCC connection %s (%s): %d nodes, %d train nodes, CS-105 %s" % (
+            def model(n):
+                ident = self.store.getSimpleNodeIdent(NodeID(n))
+                return ident.getModelName() if ident is not None else ""
+
+            def found():
+                models.clear()
+                for n in others:
+                    models[n] = model(n)
+                return any(is_cs105_model(m) for m in models.values())
+
+            _wait_until(found, 6.0)
+        self.station = choose_command_station(producers, models)
+        log("LCC connection %s (%s): %d nodes, %d train nodes, %s" % (
             self.memo.getSystemPrefix(), self.memo.getUserName(), len(self.nodes),
-            sum(1 for n in self.nodes if is_train_node(n)),
-            self.cs105 or "NOT FOUND"))
+            sum(1 for n in self.nodes if is_train_node(n)), station_status(self.station)))
 
     def train_user_name(self, node):
         from org.openlcb import NodeID
@@ -472,15 +543,16 @@ def _write_values(iface, node_dotted, values, log, timeout=60.0):
 
 
 def _apply(bus, actions, log):
-    """Create and update trains. Refuses without a CS-105 or during another run."""
+    """Create and update trains. Refuses without exactly one command station or during another run."""
     from java.lang import System
     from org.openlcb import NodeID, EventID, IdentifyProducersMessage
 
     if bus.cs105 is None:
-        raise RuntimeError("no CS-105 answered on this LCC connection; nothing written. "
-                           "Check it is powered and connected, then show the plan again.")
+        raise RuntimeError("%s on this LCC connection; nothing written. "
+                           "Check it is powered and connected, then show the plan again."
+                           % station_status(bus.station))
     if System.getProperty(LOCK_PROPERTY):
-        raise RuntimeError("another CS-105 roster sync is still running; nothing written")
+        raise RuntimeError("another roster sync is still running; nothing written")
     System.setProperty(LOCK_PROPERTY, "1")
     try:
         iface, store = bus.iface, bus.store
@@ -490,11 +562,11 @@ def _apply(bus, actions, log):
                 continue
             node = a["node"]
             if a["action"] == "create":
-                log("creating %s on the CS-105 (Train Search %s)" % (node, a["event"]))
+                log("creating %s on the command station (Train Search %s)" % (node, a["event"]))
                 iface.getOutputConnection().put(
                     IdentifyProducersMessage(iface.getNodeId(), EventID(a["event"])), None)
                 if not _wait_until(lambda: store.findNode(NodeID(node)) is not None, 15.0):
-                    log("  the CS-105 did not announce %s; skipping %s" % (node, a["entry"]["id"]))
+                    log("  the command station did not announce %s; skipping %s" % (node, a["entry"]["id"]))
                     failed += 1
                     continue
                 created += 1
@@ -533,7 +605,7 @@ def run_scripted(opts):
     actions = plan(entries, bus.nodes, rename=opts["rename"], only=only, names=opts["names"])
     _plan_lines(bus, entries, actions, only, log)
     if bus.cs105 is None:
-        log("No CS-105 answered on this connection, so applying is refused until it does.")
+        log("Applying is refused: %s." % station_status(bus.station))
     if not opts["apply"]:
         log("Nothing written. Set CS105_APPLY=True to write.")
         return "\n".join(lines)
@@ -615,8 +687,8 @@ def run_window():
             actions = plan(entries, bus.nodes, rename=rename, only=only, names=names)
             _plan_lines(bus, entries, actions, only, log)
             if bus.cs105 is None:
-                log("No CS-105 answered, so Apply is off. Check it is powered and on this "
-                    "LCC connection, then press Show plan again.")
+                log("Apply is off: %s. Check it is powered and on this LCC connection, "
+                    "then press Show plan again." % station_status(bus.station))
             else:
                 log("Nothing written yet. Press Apply to write this plan.")
             state["bus"], state["actions"] = bus, actions
@@ -627,10 +699,10 @@ def run_window():
         if not actions or bus is None:
             return
         c = summary(actions)
-        msg = ("Write to the CS-105 now?\n\n%d train(s) to create, %d to update.\n\n"
+        msg = ("Write to command station %s now?\n\n%d train(s) to create, %d to update.\n\n"
                "Function labels are replaced from the roster. A train's description is replaced "
                "where the roster entry has a comment.\nNo train moves and track power is "
-               "not touched.") % (c["create"], c["update"])
+               "not touched.") % (bus.cs105, c["create"], c["update"])
         if JOptionPane.showConfirmDialog(frame, msg, "Apply CS-105 roster sync",
                                          JOptionPane.OK_CANCEL_OPTION) != JOptionPane.OK_OPTION:
             return

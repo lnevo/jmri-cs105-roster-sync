@@ -62,6 +62,45 @@ class Encoding(unittest.TestCase):
         self.assertFalse(sync.is_cs105_model("UWT-100"))
         self.assertFalse(sync.is_cs105_model(None))
 
+    def test_firmware_spellings_get_the_same_icons(self):
+        self.assertEqual(sync.display_code("Shunt"), sync.display_code("Shunting Mode"))
+        self.assertEqual(sync.display_code("Blowdown"), sync.display_code("Blow Down"))
+        # codes JMRI's export does not use stay plain text until tested on a CS-105
+        self.assertEqual(sync.display_code("Mars Light"), 0)
+
+
+class CommandStation(unittest.TestCase):
+    CS = "02.01.57.10.00.01"
+    OTHER = "05.01.01.01.22.00"
+
+    def test_event_is_the_tcs_command_station_event(self):
+        self.assertEqual(sync.COMMAND_STATION_EVENT, "09.00.99.FE.FF.FF.00.01")
+
+    def test_found_by_event_whatever_the_model(self):
+        s = sync.choose_command_station([self.OTHER.lower()], {self.CS: "CS-105"})
+        self.assertEqual(s, {"node": self.OTHER, "by": "event", "all": [self.OTHER]})
+        self.assertIn("produces the command-station event", sync.station_status(s))
+
+    def test_falls_back_to_cs105_model_name(self):
+        s = sync.choose_command_station([], {self.CS: "TCS CS-105", self.OTHER: "UWT-100"})
+        self.assertEqual((s["node"], s["by"]), (self.CS, "model"))
+        self.assertIn("did not answer", sync.station_status(s))
+
+    def test_none_found(self):
+        s = sync.choose_command_station([], {self.OTHER: "UWT-100"})
+        self.assertEqual(s, {"node": None, "by": None, "all": []})
+        self.assertEqual(sync.station_status(s), "command station NOT FOUND")
+
+    def test_two_answers_refuse_writing(self):
+        s = sync.choose_command_station([self.CS, self.OTHER], {})
+        self.assertIsNone(s["node"])
+        self.assertEqual(s["all"], [self.CS, self.OTHER])
+        self.assertIn("2 command stations", sync.station_status(s))
+
+    def test_train_nodes_are_never_the_command_station(self):
+        s = sync.choose_command_station(["06.01.00.00.C7.23"], {"06.01.00.00.C8.49": "CS-105"})
+        self.assertIsNone(s["node"])
+
 
 class RosterFiles(unittest.TestCase):
     def setUp(self):
